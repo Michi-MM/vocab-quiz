@@ -1,0 +1,397 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <title>英単語ミニテスト自動生成</title>
+  <style>
+    body {
+      font-family: system-ui, sans-serif;
+      max-width: 900px;
+      margin: 20px auto;
+      padding: 16px;
+      line-height: 1.6;
+    }
+    textarea {
+      width: 100%;
+      height: 150px;
+    }
+    button {
+      padding: 8px 16px;
+      margin: 8px 4px 8px 0;
+      cursor: pointer;
+    }
+    .question {
+      margin: 8px 0;
+      padding: 8px;
+      border-bottom: 1px solid #ddd;
+    }
+    .answer-key {
+      margin-top: 16px;
+      padding: 8px;
+      border: 1px solid #ccc;
+      white-space: pre-wrap;
+    }
+    input[type="text"] {
+      width: 220px;
+      padding: 4px;
+    }
+    .part-title {
+      margin-top: 16px;
+      font-weight: bold;
+      font-size: 1.1rem;
+    }
+    .option {
+      margin-left: 16px;
+    }
+    .pdf-buttons {
+      margin: 12px 0 20px;
+      padding-bottom: 12px;
+      border-bottom: 1px solid #ccc;
+    }
+  </style>
+</head>
+<body>
+  <h1>英単語ミニテスト自動生成ツール</h1>
+
+  <p>① 下の枠に <strong>単語,意味</strong> の形で1行ずつ入力してください。</p>
+  <pre>
+例：
+apple,an apple
+book,a book
+posterity,descendants; future generations
+  </pre>
+
+  <textarea id="wordInput" placeholder="apple,an apple&#10;book,a book&#10;posterity,descendants; future generations"></textarea>
+  <br />
+  <button id="generateBtn">テスト生成</button>
+
+  <!-- 画面上部に表示するPDFボタン -->
+  <div id="pdfButtons" class="pdf-buttons" style="display:none;">
+    <strong>PDFダウンロード：</strong>
+    <button id="downloadQuestionPdfBtn">問題PDF</button>
+    <button id="downloadAnswerPdfBtn">解答PDF</button>
+  </div>
+
+  <h2>問題</h2>
+  <div id="questions"></div>
+
+  <button id="showAnswersBtn" style="display:none;">画面上で答えを表示</button>
+  <div id="answerKey" class="answer-key" style="display:none;"></div>
+
+  <!-- jsPDF（PDF生成ライブラリ） -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+
+  <script>
+    const generateBtn = document.getElementById("generateBtn");
+    const showAnswersBtn = document.getElementById("showAnswersBtn");
+    const wordInput = document.getElementById("wordInput");
+    const questionsDiv = document.getElementById("questions");
+    const answerKeyDiv = document.getElementById("answerKey");
+
+    const pdfButtonsDiv = document.getElementById("pdfButtons");
+    const downloadQuestionPdfBtn = document.getElementById("downloadQuestionPdfBtn");
+    const downloadAnswerPdfBtn = document.getElementById("downloadAnswerPdfBtn");
+
+    let quizData = [];   // { word, meaning }
+    let mcqData = [];    // Part B 用 { word, correctMeaning, choices[], correctIndex }
+
+    // 配列をシャッフルするヘルパー
+    function shuffle(array) {
+      const arr = array.slice();
+      for (let i = arr.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [arr[i], arr[j]] = [arr[j], arr[i]];
+      }
+      return arr;
+    }
+
+    // Part B用 4択データを作成
+    function buildMcqData(data) {
+      const meanings = data.map(d => d.meaning);
+      const result = [];
+
+      data.forEach((item) => {
+        let choices = [item.meaning];
+
+        // 他の単語の意味からダミーを選択
+        const others = meanings.filter(m => m !== item.meaning);
+        const shuffledOthers = shuffle(others);
+
+        while (choices.length < 4 && shuffledOthers.length > 0) {
+          const cand = shuffledOthers.shift();
+          if (!choices.includes(cand)) {
+            choices.push(cand);
+          }
+        }
+
+        // 単語数が少なくて4択に足りない場合、重複しても埋める
+        while (choices.length < 4) {
+          choices.push(item.meaning);
+        }
+
+        choices = shuffle(choices);
+        const correctIndex = choices.indexOf(item.meaning);
+
+        result.push({
+          word: item.word,
+          correctMeaning: item.meaning,
+          choices,
+          correctIndex
+        });
+      });
+
+      return result;
+    }
+
+    generateBtn.addEventListener("click", () => {
+      const raw = wordInput.value.trim();
+      questionsDiv.innerHTML = "";
+      answerKeyDiv.style.display = "none";
+      showAnswersBtn.style.display = "none";
+      answerKeyDiv.textContent = "";
+      pdfButtonsDiv.style.display = "none";
+
+      quizData = [];
+      mcqData = [];
+
+      if (!raw) {
+        alert("単語リストを入力してください。");
+        return;
+      }
+
+      const lines = raw.split(/\r?\n/);
+      lines.forEach((line) => {
+        const trimmed = line.trim();
+        if (!trimmed) return;
+
+        const parts = trimmed.split(",");
+        if (parts.length < 2) return;
+
+        const word = parts[0].trim();
+        const meaning = parts.slice(1).join(",").trim();
+
+        if (word && meaning) {
+          quizData.push({ word, meaning });
+        }
+      });
+
+      if (quizData.length === 0) {
+        alert("有効な行がありません。『単語,意味』の形式で入力してください。");
+        return;
+      }
+
+      mcqData = buildMcqData(quizData);
+
+      // ---------- 画面に問題を表示（Part A / Part B） ----------
+      const partATitle = document.createElement("div");
+      partATitle.className = "part-title";
+      partATitle.textContent = "Part A：意味から単語を書く";
+      questionsDiv.appendChild(partATitle);
+
+      quizData.forEach((item, index) => {
+        const qDiv = document.createElement("div");
+        qDiv.className = "question";
+
+        const label = document.createElement("div");
+        label.textContent = `A-${index + 1}. 意味：${item.meaning}`;
+
+        const input = document.createElement("input");
+        input.type = "text";
+        input.setAttribute("data-index", index);
+        input.placeholder = "英単語を入力";
+
+        qDiv.appendChild(label);
+        qDiv.appendChild(input);
+        questionsDiv.appendChild(qDiv);
+      });
+
+      const partBTitle = document.createElement("div");
+      partBTitle.className = "part-title";
+      partBTitle.textContent = "Part B：単語から意味を選ぶ（4択）";
+      questionsDiv.appendChild(partBTitle);
+
+      mcqData.forEach((item, index) => {
+        const qDiv = document.createElement("div");
+        qDiv.className = "question";
+
+        const label = document.createElement("div");
+        label.textContent = `B-${index + 1}. 単語：${item.word}`;
+
+        qDiv.appendChild(label);
+
+        const optionLabels = ["A", "B", "C", "D"];
+        item.choices.forEach((choice, i) => {
+          const optDiv = document.createElement("div");
+          optDiv.className = "option";
+          optDiv.textContent = `${optionLabels[i]}. ${choice}`;
+          qDiv.appendChild(optDiv);
+        });
+
+        questionsDiv.appendChild(qDiv);
+      });
+
+      showAnswersBtn.style.display = "inline-block";
+      pdfButtonsDiv.style.display = "block";
+    });
+
+    // 画面上で解答を表示
+    showAnswersBtn.addEventListener("click", () => {
+      if (!quizData.length) return;
+
+      let text = "【解答】\n\n";
+      text += "Part A（意味 → 単語）\n";
+      quizData.forEach((item, index) => {
+        text += `A-${index + 1}: ${item.word}（意味：${item.meaning}）\n`;
+      });
+
+      text += "\nPart B（単語 → 4択の正解）\n";
+      const optionLabels = ["A", "B", "C", "D"];
+      mcqData.forEach((item, index) => {
+        const correctLabel = optionLabels[item.correctIndex] || "?";
+        text += `B-${index + 1}: ${correctLabel}. ${item.correctMeaning}\n`;
+      });
+
+      answerKeyDiv.textContent = text;
+      answerKeyDiv.style.display = "block";
+    });
+
+    // -------- PDF生成関連（英語のみ使用） --------
+    function generateQuestionPdf() {
+      if (!quizData.length) {
+        alert("先にテストを生成してください。");
+        return;
+      }
+
+      const { jsPDF } = window.jspdf;
+      const doc = new jsPDF();
+
+      let x = 10;
+      let y = 15;
+      const lineHeight = 7;
+      const maxY = 280; // A4縦の下あたり
+
+      doc.setFontSize(14);
+      doc.text("English Vocabulary Quiz", x, y);
+      y += lineHeight * 2;
+
+      doc.setFontSize(12);
+      doc.text("Name: __________________", x, y);
+      y += lineHeight * 2;
+
+      // Part A
+      doc.setFontSize(13);
+      doc.text("Part A: Write the word from its meaning.", x, y);
+      y += lineHeight;
+
+      doc.setFontSize(11);
+      quizData.forEach((item, index) => {
+        const line = `A-${index + 1}. Meaning: ${item.meaning}  __________`;
+        if (y > maxY) {
+          doc.addPage();
+          y = 15;
+        }
+        doc.text(line, x, y);
+        y += lineHeight;
+      });
+
+      // Part B
+      if (y + lineHeight * 3 > maxY) {
+        doc.addPage();
+        y = 15;
+      }
+
+      doc.setFontSize(13);
+      doc.text("Part B: Choose the correct meaning (4 options).", x, y);
+      y += lineHeight;
+
+      doc.setFontSize(11);
+      const optionLabels = ["A", "B", "C", "D"];
+      mcqData.forEach((item, index) => {
+        const qLine = `B-${index + 1}. Word: ${item.word}`;
+        if (y > maxY) {
+          doc.addPage();
+          y = 15;
+        }
+        doc.text(qLine, x, y);
+        y += lineHeight;
+
+        item.choices.forEach((choice, i) => {
+          const optLine = `   ${optionLabels[i]}. ${choice}`;
+          if (y > maxY) {
+            doc.addPage();
+            y = 15;
+          }
+          doc.text(optLine, x, y);
+          y += lineHeight;
+        });
+        y += 2; // 少し余白
+      });
+
+      doc.save("vocab_quiz_questions.pdf");
+    }
+
+    function generateAnswerPdf() {
+      if (!quizData.length) {
+        alert("先にテストを生成してください。");
+        return;
+      }
+
+      const { jsPDF } = window.jspdf;
+      const doc = new jsPDF();
+
+      let x = 10;
+      let y = 15;
+      const lineHeight = 7;
+      const maxY = 280;
+
+      doc.setFontSize(14);
+      doc.text("English Vocabulary Quiz - Answer Key", x, y);
+      y += lineHeight * 2;
+
+      // Part A 解答
+      doc.setFontSize(13);
+      doc.text("Part A (Meaning -> Word)", x, y);
+      y += lineHeight;
+
+      doc.setFontSize(11);
+      quizData.forEach((item, index) => {
+        const line = `A-${index + 1}: ${item.word}  (Meaning: ${item.meaning})`;
+        if (y > maxY) {
+          doc.addPage();
+          y = 15;
+        }
+        doc.text(line, x, y);
+        y += lineHeight;
+      });
+
+      // Part B 解答
+      if (y + lineHeight * 3 > maxY) {
+        doc.addPage();
+        y = 15;
+      }
+
+      doc.setFontSize(13);
+      doc.text("Part B (Word -> Correct option)", x, y);
+      y += lineHeight;
+
+      doc.setFontSize(11);
+      const optionLabels = ["A", "B", "C", "D"];
+      mcqData.forEach((item, index) => {
+        const correctLabel = optionLabels[item.correctIndex] || "?";
+        const line = `B-${index + 1}: ${correctLabel}. ${item.correctMeaning}  (Word: ${item.word})`;
+        if (y > maxY) {
+          doc.addPage();
+          y = 15;
+        }
+        doc.text(line, x, y);
+        y += lineHeight;
+      });
+
+      doc.save("vocab_quiz_answers.pdf");
+    }
+
+    downloadQuestionPdfBtn.addEventListener("click", generateQuestionPdf);
+    downloadAnswerPdfBtn.addEventListener("click", generateAnswerPdf);
+  </script>
+</body>
+</html>
